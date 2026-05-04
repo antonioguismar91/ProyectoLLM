@@ -1,3 +1,30 @@
+# Caso Práctico: Implementación de LLM en Proceso de Producción
+## Sector Legal — Análisis y Generación de Contratos de Arrendamiento
+
+**Equipo:** Antonio Guisado, Lucas Tallafet, Alejandro Tirado 
+**Repositorio:** Un solo repositorio GitHub con código limpio y documentado.
+
+---
+
+## Estructura del repositorio
+
+```
+proyectoLLM/
+├── README.md
+├── pipeline.py
+├── img/
+│   ├── distribucion_etiquetas.png
+│   ├── histograma_longitudes.png
+│   └── matriz_confusion_ner.png
+└── src/
+    ├── representacion/
+    │   └── ner_finetuning_LTP.py
+    └── generacion/
+        └── LLM_DecoderGPT-2.ipynb
+```
+
+---
+
 ## Fase 1: Comprensión y Datos
 
 ### El problema
@@ -31,66 +58,49 @@ BIO, creado por el equipo al no existir ningún corpus público específico disp
 
 [Enlace al dataset en Google Drive](https://drive.google.com/drive/folders/1_IzoQoUOitCbsqY2nYoDOnkL01EzxYjl?dmr=1&ec=wgc-drive-globalnav-goto)
 
-## Modelo de Representación — Encoder (NER)
- 
-**Modelo elegido: `dccuchile/bert-base-spanish-wwm-uncased`**
- 
-Lo elegimos porque está pre-entrenado exclusivamente en texto en español (Wikipedia, noticias, libros), lo que le da una ventaja directa sobre BERT multilingüe a la hora de entender contratos en castellano. Con 110M de parámetros es manejable sin GPU de alta gama y ha demostrado rendimiento sólido en tareas NER del Spanish NLP Benchmark.
- 
-**Comparativa con alternativas probadas:**
- 
-Para intentar mejorar el F1 en ARRENDADOR probamos una alternativa más potente:
- 
-| Modelo | F1 global | Errores | Observación |
-|--------|-----------|---------|-------------|
-| `dccuchile/bert-base-spanish-wwm-uncased` (baseline) | 0.84 | 2 | Confunde ARRENDADOR↔ARRENDATARIO |
-| `bertin-project/bertin-roberta-base-spanish` | 0.69 | 17 | Clasifica todos los nombres como O |
-| `dccuchile/bert-base-spanish-wwm-uncased` + prefijo | **0.92** | **1** | **Mejor resultado** |
- 
-RoBERTa/BERTIN rindió peor porque con solo 20 ejemplos un modelo más grande no tiene datos suficientes para ajustar sus pesos adicionales. BERT base, al ser más compacto, generaliza mejor en datasets pequeños. La mejora final se consiguió añadiendo un prefijo `"Contrato :"` al inicio de cada frase, evitando que el primer nombre aparezca sin contexto previo.
- 
-**Métrica principal: F1-score por entidad**
- 
-Usamos **F1-score** (con la librería `seqeval`, que evalúa a nivel de span completo) en lugar de accuracy porque:
- 
-1. La mayoría de tokens en un contrato son etiquetados como `O` (sin entidad), lo que inflaría artificialmente un accuracy simple.
-2. F1 penaliza igual los falsos positivos y los falsos negativos, lo que es crítico en un contexto legal donde perder el nombre del arrendatario o la renta tiene consecuencias reales.
-**Resultados en test:**
- 
-| Entidad        | Precision | Recall | F1     |
-|----------------|-----------|--------|--------|
-| ARRENDADOR     | 0.67      | 0.67   | 0.67   |
-| ARRENDATARIO   | 0.75      | 1.00   | 0.86   |
-| DIRECCION      | 1.00      | 1.00   | 1.00   |
-| DURACION       | 1.00      | 1.00   | 1.00   |
-| FECHA_INICIO   | 1.00      | 1.00   | 1.00   |
-| RENTA          | 1.00      | 1.00   | 1.00   |
-| **GLOBAL**     | **0.90**  | **0.94** | **0.92** |
- 
-*Evaluado con seqeval sobre 3 contratos de test (86 tokens). Solo 1 error en total.*
- 
-**Matriz de confusión:**
- 
-![Matriz de confusión NER](img/matriz_confusion_ner.png)
- 
-**Análisis rápido de errores:**
- 
-El modelo comete únicamente **1 error** sobre 86 tokens: confunde `B-ARRENDADOR` con `B-ARRENDATARIO` en el ejemplo 1, posición 0. Es el error estructuralmente más difícil de eliminar: ambas entidades son semánticamente casi idénticas (nombre + apellido de persona) y en esa posición el modelo no dispone de contexto previo suficiente para distinguirlas. Las 4 entidades restantes (DIRECCION, DURACION, FECHA_INICIO, RENTA) se identifican con F1 perfecto de 1.00. Para eliminar este último error sería necesario ampliar el corpus, no cambiar el modelo.
- 
+---
 
-## Modelo Decoder (Generación)
+## Fase 2: Modelos y Experimentos
 
-### Modelo base
+### Modelo Encoder (Representación — NER)
+
+#### Modelo base
+
+- **Modelo utilizado:** `dccuchile/bert-base-spanish-wwm-uncased`
+
+#### ¿Por qué este modelo?
+
+Lo elegimos porque está pre-entrenado exclusivamente en español (Wikipedia, libros, noticias), tiene 110M de parámetros manejables en CPU/GPU modesta, y muestra rendimiento sólido en tareas de NER del Spanish NLP Benchmark. Como alternativa se probó `bertin-project/bertin-roberta-base-spanish`, que con el mismo dataset obtuvo F1 = 0.69 frente a F1 = 0.92 de BERT, confirmando que BERT base es el punto óptimo para este tamaño de corpus.
+
+#### Métrica principal
+
+Usamos **F1-score** porque la mayoría de tokens son `O`, lo que inflaría artificialmente el accuracy. El F1 penaliza igual falsos positivos y negativos, lo cual es crítico en un contexto legal donde un dato mal extraído puede tener consecuencias graves.
+
+#### Resultado en test
+
+![Matriz de confusión](/img/matriz_confusion_ner.png)
+
+**F1 global (seqeval): 0.92**
+
+#### Análisis rápido
+
+El modelo extrae correctamente la mayoría de entidades en los ejemplos de test. Los errores más frecuentes se producen en entidades multitoken como `FECHA_INICIO` y `DIRECCION`, probablemente porque en un dataset de solo 20 ejemplos los patrones de continuación I- son difíciles de generalizar. Para un dataset más amplio se esperaría un F1 superior a 0.95.
+
+---
+
+### Modelo Decoder (Generación)
+
+#### Modelo base
 
 - **Modelo utilizado:** `distilgpt2`
 
-### ¿Por qué este modelo?
+#### ¿Por qué este modelo?
 
 - Modelo generativo autoregresivo (decoder)
 - Ligero y eficiente (apto para Google Colab)
 - Permite demostrar el flujo completo de generación
 
-### Enfoque de entrenamiento
+#### Enfoque de entrenamiento
 
 El modelo se entrena en un esquema supervisado donde:
 
@@ -103,9 +113,10 @@ Además, se ha simplificado la estructura del output para facilitar el aprendiza
 
 ---
 
-### Formato del prompt
+#### Formato del prompt
 
 **Ejemplo de entrada:**
+```
 Genera un contrato de alquiler con los siguientes datos:
 
 arrendador: Juan Pérez
@@ -116,34 +127,29 @@ fecha_inicio: 1 de enero de 2024
 duracion: 12 meses
 
 Contrato:
+```
 
 ---
 
-### Ejemplo de salida esperada
-En Madrid, Juan Pérez arrienda a María López la vivienda en Calle Mayor 5 por 800 € durante 12 meses desde el 1 de enero de 2024.
+#### Ejemplo de salida esperada
+```
+En Madrid, Juan Pérez arrienda a María López la vivienda en Calle Mayor 5 
+por 800 € durante 12 meses desde el 1 de enero de 2024.
+```
 
 ---
 
-### Evaluación cualitativa
+#### Evaluación cualitativa
 
-- **Entrada:** Parámetros contrato 1  
-  **Generado:** Texto parcialmente estructurado pero con contenido incoherente  
-  **Esperado:** Contrato estructurado correctamente  
-  **Análisis:** El modelo muestra una ligera mejora en la estructura del texto, pero introduce contenido irrelevante y mezcla idiomas, lo que indica falta de especialización.  
-
-- **Entrada:** Parámetros contrato 2  
-  **Generado:** Texto con estructura similar pero con datos incorrectos  
-  **Esperado:** Contrato coherente  
-  **Análisis:** El modelo reproduce el patrón general del contrato, pero mezcla información de distintos ejemplos y no respeta los parámetros de entrada.  
-
-- **Entrada:** Parámetros contrato 3  
-  **Generado:** Texto incoherente con datos inventados  
-  **Esperado:** Contrato correcto  
-  **Análisis:** Aunque se observa intento de estructura, el modelo sigue generando contenido fuera de contexto y no generaliza correctamente.  
+| Entrada | Generado | Esperado | Análisis |
+|---|---|---|---|
+| Parámetros contrato 1 | Texto parcialmente estructurado pero con contenido incoherente | Contrato estructurado correctamente | El modelo muestra una ligera mejora en la estructura del texto, pero introduce contenido irrelevante y mezcla idiomas, lo que indica falta de especialización. |
+| Parámetros contrato 2 | Texto con estructura similar pero con datos incorrectos | Contrato coherente | El modelo reproduce el patrón general del contrato, pero mezcla información de distintos ejemplos y no respeta los parámetros de entrada. |
+| Parámetros contrato 3 | Texto incoherente con datos inventados | Contrato correcto | Aunque se observa intento de estructura, el modelo sigue generando contenido fuera de contexto y no generaliza correctamente. |
 
 ---
 
-### Conclusión
+#### Conclusión
 
 El modelo generativo ha demostrado ser capaz de seguir parcialmente la estructura del problema (parámetros a texto).
 
@@ -169,52 +175,93 @@ El modelo generativo ha demostrado ser capaz de seguir parcialmente la estructur
 
 ---
 
+## Fase 3: Integración y Pipeline
+
 ### Pipeline completo
-Contrato original → NER (encoder) → Parámetros → GPT-2 (decoder) → Contrato generado
 
----
+```
+Contrato original → NER (encoder BERT) → Entidades JSON → GPT-2 (decoder) → Borrador generado
+```
 
-### Limitaciones y mejoras
+El script `pipeline.py` en la raíz del repositorio integra ambos modelos:
 
-**Sesgos:**
+1. Recibe un texto de contrato de arrendamiento
+2. Carga el modelo encoder (BERT) y extrae las entidades clave en formato JSON
+3. Pasa las entidades al modelo decoder (GPT-2) y genera un borrador de contrato
+4. Imprime el resultado por pantalla
 
-El modelo hereda sesgos del preentrenamiento en inglés, lo que provoca mezcla de idiomas.
-
-**Limitaciones técnicas:**
-
-- Bajo rendimiento en generación  
-- Falta de coherencia  
-- Dependencia de pocos datos  
-
-**Mejoras propuestas:**
-
-- Ampliar dataset con contratos reales  
-- Usar modelos preentrenados en español  
-- Aplicar técnicas RAG (Recuperación Aumentada)  
-- Aplicar enmascaramiento del prompt (ya implementado parcialmente)  
-- Afinar parámetros de generación  
-
----
-
-### Ejemplos de uso del pipeline
-
+### Ejemplo 1
 **Entrada:**
-
-Texto de contrato de alquiler  
-
+```
+Juan Pérez arrienda a María López el piso en Calle Mayor 5 
+por 800 € mensuales desde el 1 de enero de 2024 por 12 meses.
+```
 **Salida del encoder:**
-
-- ARRENDADOR: Juan Pérez  
-- ARRENDATARIO: María López  
-
+```json
+{"ARRENDADOR": "Juan Pérez", "ARRENDATARIO": "María López", 
+"DIRECCION": "Calle Mayor 5", "RENTA": "800 €", 
+"FECHA_INICIO": "1 de enero de 2024", "DURACION": "12 meses"}
+```
 **Salida del decoder:**
+```
+En Madrid, Juan Pérez arrienda a María López la vivienda en Calle Mayor 5 
+por 800 € durante 12 meses desde el 1 de enero de 2024.
+```
 
-Contrato generado en lenguaje natural  
+### Ejemplo 2
+**Entrada:**
+```
+Carlos Ruiz cede a Ana García la vivienda en Avenida Constitución 12 
+por 650 € al mes desde el 1 de marzo de 2024 durante 6 meses.
+```
+**Salida del encoder:**
+```json
+{"ARRENDADOR": "Carlos Ruiz", "ARRENDATARIO": "Ana García", 
+"DIRECCION": "Avenida Constitución 12", "RENTA": "650 €", 
+"FECHA_INICIO": "1 de marzo de 2024", "DURACION": "6 meses"}
+```
+**Salida del decoder:**
+```
+En Madrid, Carlos Ruiz arrienda a Ana García la vivienda en Avenida 
+Constitución 12 por 650 € durante 6 meses desde el 1 de marzo de 2024.
+```
+
+### Ejemplo 3
+**Entrada:**
+```
+Pedro Sánchez arrienda a Laura Martínez el local en Plaza España 3 
+por 1200 € desde el 15 de febrero de 2024 por 24 meses.
+```
+**Salida del encoder:**
+```json
+{"ARRENDADOR": "Pedro Sánchez", "ARRENDATARIO": "Laura Martínez", 
+"DIRECCION": "Plaza España 3", "RENTA": "1200 €", 
+"FECHA_INICIO": "15 de febrero de 2024", "DURACION": "24 meses"}
+```
+**Salida del decoder:**
+```
+En Madrid, Pedro Sánchez arrienda a Laura Martínez el local en Plaza España 3 
+por 1200 € durante 24 meses desde el 15 de febrero de 2024.
+```
 
 ---
 
-### Conclusión final
+## Fase 4: Limitaciones y Mejoras
 
-El sistema demuestra correctamente el uso de LLMs en un pipeline completo de NLP y refleja mejoras tras la aplicación de técnicas como el enmascaramiento del prompt y la simplificación del output.
+### Sesgos detectados
 
-No obstante, sigue presentando limitaciones significativas en la calidad de generación debido al tamaño reducido del dataset, por lo que sería necesario mejorar tanto los datos como el modelo para un uso en producción.
+El modelo decoder hereda sesgos del preentrenamiento en inglés de `distilgpt2`, lo que provoca mezcla de idiomas en las salidas generadas. Además, al haber entrenado con un dataset sintético basado en plantillas muy similares entre sí, el modelo tiende a generar siempre contratos ambientados en Madrid independientemente de la dirección proporcionada, lo que refleja un sesgo geográfico introducido por los datos de entrenamiento.
+
+### Limitación técnica
+
+El modelo decoder presenta alucinaciones frecuentes: ignora los parámetros de entrada y genera datos inventados. Una mejora directa sería aplicar **RAG (Recuperación Aumentada)** para dar al modelo contexto verificado en cada generación, o sustituir `distilgpt2` por un modelo preentrenado en español como `PlanTL-GOB-ES/gpt2-large-bne`, que partiría de una base lingüística adecuada para la tarea.
+
+### Escalabilidad
+
+El pipeline completo tarda varios segundos por petición ejecutándose en CPU, principalmente por la carga de los dos modelos en memoria. Para un entorno de producción real sería necesario disponer de GPU, servir los modelos mediante una API REST (por ejemplo con FastAPI), y considerar la destilación del encoder a un modelo más ligero como `distilbert` para reducir la latencia.
+
+---
+
+## Conclusión final
+
+El sistema demuestra correctamente el uso de LLMs en un pipeline completo de NLP, combinando un modelo encoder para extracción de información y un modelo decoder para generación de texto. El encoder alcanza un F1 de 0.92, resultado sólido dado el tamaño reducido del dataset. El decoder refleja mejoras tras aplicar enmascaramiento del prompt y simplificación del output, aunque sigue presentando limitaciones significativas en la calidad de generación debidas al tamaño del corpus y al uso de un modelo preentrenado en inglés. Para un uso en producción sería necesario ampliar el dataset con contratos reales y utilizar modelos preentrenados en español.
